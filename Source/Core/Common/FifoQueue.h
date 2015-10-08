@@ -8,7 +8,10 @@
 // single reader, single writer queue
 
 #include <algorithm>
+#include <utility>
 #include <atomic>
+#include <new>
+
 #include <cstddef>
 
 #include "Common/CommonTypes.h"
@@ -20,106 +23,162 @@ template <typename T, bool NeedSize = true>
 class FifoQueue
 {
 public:
-	FifoQueue() : m_size(0)
+	FifoQueue()
 	{
-		 m_write_ptr = m_read_ptr = new ElementPtr();
+		init();
 	}
 
 	~FifoQueue()
 	{
-		// this will empty out the whole queue
-		delete m_read_ptr;
+		destroy();
 	}
 
 	u32 Size() const
 	{
-		static_assert(NeedSize, "using Size() on FifoQueue without NeedSize");
-		return m_size.load();
+		return tail.load(std::memory_order_relaxed) - head;
 	}
 
 	bool Empty() const
 	{
-		return !m_read_ptr->next.load();
+		return Size() == 0;
 	}
 
+	//this is quite invalid on an empty queue...
 	T& Front() const
 	{
-		return m_read_ptr->current;
+		return head_block[head];
 	}
 
-	template <typename Arg>
-	void Push(Arg&& t)
+	template <typename ...Arg>
+	void Push(Arg&&... t)
 	{
-		// create the element, add it to the queue
-		m_write_ptr->current = std::forward<Arg>(t);
-		// set the next pointer to a new element ptr
-		// then advance the write pointer
-		ElementPtr* new_ptr = new ElementPtr();
-		m_write_ptr->next.store(new_ptr, std::memory_order_release);
-		m_write_ptr = new_ptr;
-		if (NeedSize)
-			m_size++;
+		auto ctail = tail.load(std::memory_order_relaxed);
+		auto cind = ctail & nmod;
+		if (cind == 0) {
+			auto nb = get_block();
+
+			//this can be relaxed, since the release store on tail
+			//acts as a synchronizer - head can not read this
+			//until it reads the increased tail, at which point this
+			//store is good to go!
+			tail_block->next.store(nb, std::memory_order_relaxed);
+			tail_block = nb;
+
+		}
+
+		new (&tail_block->elems[cind]) T(std::forward<Arg>(t)...);
+		tail.store(ctail + 1, std::memory_order_release);
 	}
 
 	void Pop()
 	{
-		if (NeedSize)
-			m_size--;
-		ElementPtr *tmpptr = m_read_ptr;
-		// advance the read pointer
-		m_read_ptr = tmpptr->next.load();
-		// set the next element to nullptr to stop the recursive deletion
-		tmpptr->next.store(nullptr);
-		delete tmpptr; // this also deletes the element
+		dopop<false>(nullptr);
 	}
 
 	bool Pop(T& t)
 	{
-		if (Empty())
-			return false;
-
-		if (NeedSize)
-			m_size--;
-
-		ElementPtr *tmpptr = m_read_ptr;
-		m_read_ptr = tmpptr->next.load(std::memory_order_acquire);
-		t = std::move(tmpptr->current);
-		tmpptr->next.store(nullptr);
-		delete tmpptr;
-		return true;
+		return dopop<true>(&t);
 	}
 
 	// not thread-safe
 	void Clear()
 	{
-		m_size.store(0);
-		delete m_read_ptr;
-		m_write_ptr = m_read_ptr = new ElementPtr();
+		//extra alloc, but way simpler...
+		destroy();
+		init();
 	}
 
 private:
-	// stores a pointer to element
-	// and a pointer to the next ElementPtr
-	class ElementPtr
+
+	void init(){
+		head_block = get_block();
+		tail_block = head_block;
+		head = 1;
+		tail_cache = 1;
+		tail.store(1, std::memory_order_relaxed);
+		std::atomic_thread_fence(std::memory_order_release);
+	}
+
+	void destroy() {
+		std::atomic_thread_fence(std::memory_order_acquire);
+		while (Pop());
+		while (head) {
+			dptr = head_block;
+			head = head_block->next.load(std::memory_order_relaxed);
+			return_block(dptr);
+		}
+	}
+
+	template<bool docreate>
+	bool dopop(T *dop)
 	{
-	public:
-		ElementPtr() : next(nullptr) {}
-
-		~ElementPtr()
-		{
-			ElementPtr* next_ptr = next.load();
-
-			if (next_ptr)
-				delete next_ptr;
+		auto chead = head;
+		if (chead == tail_cache) {
+			tail_cache = tail.load(std::memory_order_acquire);
+			if (chead == tail_cache) {
+				return false;
+			}
 		}
 
-		T current;
-		std::atomic<ElementPtr*> next;
+		head++;
+		auto hind = chead & nmod;
+		if (hind == 0) {
+			auto ohead = head_block;
+			//this can be relaxed, since the acquire on tail ensures that
+			//this won't be reordered around a store to next on this
+			head_block = head_block->next.load(std::memory_order_relaxed);
+			return_block(ohead);
+		}
+
+		T &curv = head_block->elems[hind];
+
+		if (docreate) {
+			*dop = std::move(curv);
+		}
+		else {
+			curv.~T();
+		}
+		return true;
+	}
+
+	struct queue_block;
+
+	queue_block *get_block() {
+		return malloc(sizeof(queue_block));
+	}
+
+	void return_block(queue_block *qb) {
+		free(qb);
+	}
+	//kinda of a little namespace!
+	struct get_size {
+
+		constexpr static size_t get_big() {
+			return sizeof(T) < 1024 ? 8 : 4;
+		}
+
+		constexpr static size_t get_med() {
+			return sizeof(T) <= 128 ? 32 : get_big();
+		}
+
+		constexpr static size_t size() {
+			return sizeof(T) <= 32 ? 128 : get_med();
+		}
+
 	};
 
-	ElementPtr *m_write_ptr;
-	ElementPtr *m_read_ptr;
-	std::atomic<u32> m_size;
-};
+	constexpr static size_t nelems = get_size::size();
+	constexpr static size_t nmod = nelems - 1;
 
-}
+	struct queue_block {
+		T elems[nelems];
+		std::atomic<queue_block *> next;
+	};
+
+	std::atomic<size_t> tail;
+	queue_block *tail_block;
+
+	size_t head;
+	size_t tail_cache;
+	queue_block *head_block;
+};
