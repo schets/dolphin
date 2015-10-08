@@ -103,7 +103,7 @@ private:
 		std::atomic_thread_fence(std::memory_order_acquire);
 		while (Pop());
 		while (head) {
-			dptr = head_block;
+			auto dptr = head_block;
 			head = head_block->next.load(std::memory_order_relaxed);
 			return_block(dptr);
 		}
@@ -124,8 +124,8 @@ private:
 		auto hind = chead & nmod;
 		if (hind == 0) {
 			auto ohead = head_block;
-			//this can be relaxed, since the acquire on tail ensures that
-			//this won't be reordered around a store to next on this
+			//this can be relaxed, since the acquire on tail ensures
+			//synchronization with the release store to tail, and in turn
 			head_block = head_block->next.load(std::memory_order_relaxed);
 			return_block(ohead);
 		}
