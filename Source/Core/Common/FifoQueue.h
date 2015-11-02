@@ -33,7 +33,7 @@ public:
 		destroy();
 	}
 
-	u32 Size() const
+	size_t Size() const
 	{
 		return tail.load(std::memory_order_relaxed) - head;
 	}
@@ -46,7 +46,7 @@ public:
 	//this is quite invalid on an empty queue...
 	T& Front() const
 	{
-		return head_block[head];
+		return head_block->elems[head & nmod];
 	}
 
 	template <typename ...Arg>
@@ -60,7 +60,7 @@ public:
 			//this can be relaxed, since the release store on tail
 			//acts as a synchronizer - head can not read this
 			//until it reads the increased tail, at which point this
-			//store is good to go!
+			//store is good to go
 			tail_block->next.store(nb, std::memory_order_relaxed);
 			tail_block = nb;
 
@@ -70,9 +70,9 @@ public:
 		tail.store(ctail + 1, std::memory_order_release);
 	}
 
-	void Pop()
+	bool Pop()
 	{
-		dopop<false>(nullptr);
+		return dopop<false>(nullptr);
 	}
 
 	bool Pop(T& t)
@@ -90,21 +90,22 @@ public:
 
 private:
 
-	void init(){
+	void init() {
 		head_block = get_block();
 		tail_block = head_block;
 		head = 1;
 		tail_cache = 1;
 		tail.store(1, std::memory_order_relaxed);
-		std::atomic_thread_fence(std::memory_order_release);
+		std::atomic_thread_fence(std::memory_order_seq_cst);
 	}
 
+	//not thread safe...
 	void destroy() {
-		std::atomic_thread_fence(std::memory_order_acquire);
+		std::atomic_thread_fence(std::memory_order_seq_cst);
 		while (Pop());
-		while (head) {
+		while (head_block) {
 			auto dptr = head_block;
-			head = head_block->next.load(std::memory_order_relaxed);
+			head_block = head_block->next.load(std::memory_order_relaxed);
 			return_block(dptr);
 		}
 	}
@@ -126,6 +127,7 @@ private:
 			auto ohead = head_block;
 			//this can be relaxed, since the acquire on tail ensures
 			//synchronization with the release store to tail, and in turn
+			//ensure that this load of the next block is correct
 			head_block = head_block->next.load(std::memory_order_relaxed);
 			return_block(ohead);
 		}
@@ -144,17 +146,23 @@ private:
 	struct queue_block;
 
 	queue_block *get_block() {
-		return malloc(sizeof(queue_block));
+		//malloc avoids initialization shenanigans in queue blocks
+		return (queue_block *)malloc(sizeof(queue_block));
 	}
 
 	void return_block(queue_block *qb) {
 		free(qb);
 	}
-	//kinda of a little namespace!
+
 	struct get_size {
 
+		//with a size of 1, this should optimize
+		//to something close to an ok linked
+		//list - in that case, any queue cost
+		//difference will be small compared
+		//to inserting elements
 		constexpr static size_t get_big() {
-			return sizeof(T) < 1024 ? 8 : 4;
+			return sizeof(T) < 1024 ? 4 : 1;
 		}
 
 		constexpr static size_t get_med() {
@@ -175,6 +183,9 @@ private:
 		std::atomic<queue_block *> next;
 	};
 
+	//wisdom says there should be buffers between
+	//the cache lines to improve performance in contention
+	//In my benchmarks, those reduce performance...?
 	std::atomic<size_t> tail;
 	queue_block *tail_block;
 
@@ -182,3 +193,5 @@ private:
 	size_t tail_cache;
 	queue_block *head_block;
 };
+
+}
