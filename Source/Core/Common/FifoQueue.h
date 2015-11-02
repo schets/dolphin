@@ -19,7 +19,7 @@
 namespace Common
 {
 
-template <typename T, bool NeedSize = true>
+template <typename T>
 class FifoQueue
 {
 public:
@@ -43,7 +43,7 @@ public:
 		return Size() == 0;
 	}
 
-	//this is quite invalid on an empty queue...
+	//This is super unsafe...
 	T& Front() const
 	{
 		return head_block->elems[head & nmod];
@@ -54,7 +54,8 @@ public:
 	{
 		auto ctail = tail.load(std::memory_order_relaxed);
 		auto cind = ctail & nmod;
-		if (cind == 0) {
+		if (cind == 0)
+		{
 			auto nb = get_block();
 
 			//this can be relaxed, since the release store on tail
@@ -80,17 +81,17 @@ public:
 		return dopop<true>(&t);
 	}
 
-	// not thread-safe
+	//Not thread safe
 	void Clear()
 	{
-		//extra alloc, but way simpler...
 		destroy();
 		init();
 	}
 
 private:
 
-	void init() {
+	void init()
+	{
 		head_block = get_block();
 		tail_block = head_block;
 		head = 1;
@@ -99,11 +100,12 @@ private:
 		std::atomic_thread_fence(std::memory_order_seq_cst);
 	}
 
-	//not thread safe...
-	void destroy() {
+	void destroy()
+	{
 		std::atomic_thread_fence(std::memory_order_seq_cst);
 		while (Pop());
-		while (head_block) {
+		while (head_block)
+		{
 			auto dptr = head_block;
 			head_block = head_block->next.load(std::memory_order_relaxed);
 			return_block(dptr);
@@ -114,16 +116,18 @@ private:
 	bool dopop(T *dop)
 	{
 		auto chead = head;
-		if (chead == tail_cache) {
+		if (chead == tail_cache)
+		{
 			tail_cache = tail.load(std::memory_order_acquire);
-			if (chead == tail_cache) {
+			if (chead == tail_cache)
+			{
 				return false;
 			}
 		}
 
-		head++;
 		auto hind = chead & nmod;
-		if (hind == 0) {
+		if (hind == 0)
+		{
 			auto ohead = head_block;
 			//this can be relaxed, since the acquire on tail ensures
 			//synchronization with the release store to tail, and in turn
@@ -132,12 +136,15 @@ private:
 			return_block(ohead);
 		}
 
+		++head;
 		T &curv = head_block->elems[hind];
 
-		if (docreate) {
+		if (docreate)
+		{
 			*dop = std::move(curv);
 		}
-		else {
+		else
+		{
 			curv.~T();
 		}
 		return true;
@@ -145,33 +152,39 @@ private:
 
 	struct queue_block;
 
-	queue_block *get_block() {
+	queue_block *get_block()
+	{
 		//malloc avoids initialization shenanigans in queue blocks
 		queue_block *rblock = (queue_block *)malloc(sizeof(queue_block));
 		rblock->next = nullptr;
 		return rblock;
 	}
 
-	void return_block(queue_block *qb) {
+	void return_block(queue_block *qb)
+	{
 		free(qb);
 	}
 
-	struct get_size {
+	struct get_size
+	{
 
 		//with a size of 1, this should optimize
 		//to something close to an ok linked
 		//list - in that case, any queue cost
 		//difference will be small compared
 		//to inserting elements
-		constexpr static size_t get_big() {
+		constexpr static size_t get_big()
+		{
 			return sizeof(T) < 1024 ? 4 : 1;
 		}
 
-		constexpr static size_t get_med() {
+		constexpr static size_t get_med()
+		{
 			return sizeof(T) <= 128 ? 32 : get_big();
 		}
 
-		constexpr static size_t size() {
+		constexpr static size_t size()
+		{
 			return sizeof(T) <= 32 ? 128 : get_med();
 		}
 
@@ -180,7 +193,8 @@ private:
 	constexpr static size_t nelems = get_size::size();
 	constexpr static size_t nmod = nelems - 1;
 
-	struct queue_block {
+	struct queue_block
+	{
 		T elems[nelems];
 		std::atomic<queue_block *> next;
 	};

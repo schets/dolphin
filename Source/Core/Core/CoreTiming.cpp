@@ -44,7 +44,7 @@ typedef LinkedListItem<BaseEvent> Event;
 // STATE_TO_SAVE
 static Event *first;
 static std::mutex tsWriteLock;
-static Common::FifoQueue<BaseEvent, false> tsQueue;
+static Common::FifoQueue<BaseEvent> tsQueue;
 
 // event pools
 static Event *eventPool = nullptr;

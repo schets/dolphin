@@ -115,7 +115,7 @@ private:
 
 	std::string m_selected_game;
 	std::thread m_thread;
-	Common::FifoQueue<std::unique_ptr<sf::Packet>, false> m_async_queue;
+	Common::FifoQueue<std::unique_ptr<sf::Packet>> m_async_queue;
 
 	ENetHost*        m_server;
 	TraversalClient* m_traversal_client;

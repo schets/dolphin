@@ -100,7 +100,7 @@ protected:
 		std::recursive_mutex async_queue_write;
 	} m_crit;
 
-	Common::FifoQueue<std::unique_ptr<sf::Packet>, false> m_async_queue;
+	Common::FifoQueue<std::unique_ptr<sf::Packet>> m_async_queue;
 
 	Common::FifoQueue<GCPadStatus> m_pad_buffer[4];
 	Common::FifoQueue<NetWiimote>  m_wiimote_buffer[4];
