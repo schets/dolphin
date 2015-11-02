@@ -147,7 +147,9 @@ private:
 
 	queue_block *get_block() {
 		//malloc avoids initialization shenanigans in queue blocks
-		return (queue_block *)malloc(sizeof(queue_block));
+		queue_block *rblock = (queue_block *)malloc(sizeof(queue_block));
+		rblock->next = nullptr;
+		return rblock;
 	}
 
 	void return_block(queue_block *qb) {
